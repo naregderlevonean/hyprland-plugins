@@ -29,6 +29,7 @@
 #include "BarPassElement.hpp"
 
 #include <climits>
+#include <algorithm>
 
 using namespace Render::GL;
 
@@ -521,15 +522,21 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
 
     const auto BARBUF = DECOBOX.size() * pMonitor->m_scale;
 
-    CBox       titleBarBox = {DECOBOX.x - pMonitor->m_position.x, DECOBOX.y - pMonitor->m_position.y, DECOBOX.w,
-                              DECOBOX.h + ROUNDING * 3 /* to fill the bottom cuz we can't disable rounding there */};
+    // The bar must never be painted below the bottom edge of the window: when the
+    // window is shorter than the bar, clamp the drawn box to the window bounds.
+    const auto WINDOWBOTTOM =
+        PWINDOW->position(Desktop::View::IGeometric::GEOMETRIC_CURRENT).y + PWINDOW->size(Desktop::View::IGeometric::GEOMETRIC_CURRENT).y + WORKSPACEOFFSET.y;
+    const auto MAXBARHEIGHT  = std::max(0.0, WINDOWBOTTOM - DECOBOX.y);
+    // +ROUNDING * 3 to fill the bottom cuz we can't disable rounding there
+    const auto FULLBARHEIGHT = DECOBOX.h + ROUNDING * 3;
+    const auto BARBOXHEIGHT  = std::min(FULLBARHEIGHT, MAXBARHEIGHT);
+
+    CBox       titleBarBox = {DECOBOX.x - pMonitor->m_position.x, DECOBOX.y - pMonitor->m_position.y, DECOBOX.w, BARBOXHEIGHT};
 
     titleBarBox.translate(PWINDOW->presentation().floatingOffset()).scale(pMonitor->m_scale).round();
 
     if (titleBarBox.w < 1 || titleBarBox.h < 1)
         return;
-
-    g_pHyprOpenGL->scissor(ctx, titleBarBox);
 
     if (ROUNDING) {
         // the +1 is a shit garbage temp fix until renderRect supports an alpha matte
@@ -539,6 +546,11 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
 
         if (windowBox.w < 1 || windowBox.h < 1)
             return;
+
+        // The stencil mask has to cover the whole window: with the scissor set to
+        // the (small) bar box, the stencil would only be valid there, and the bar
+        // could bleed over the window's content outside of the scissored area.
+        g_pHyprOpenGL->scissor(ctx, nullptr);
 
         glClearStencil(0);
         glClear(GL_STENCIL_BUFFER_BIT);
@@ -559,6 +571,8 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
     }
 
+    g_pHyprOpenGL->scissor(ctx, titleBarBox);
+
     if (SHOULDBLUR)
         g_pHyprOpenGL->renderRect(
             ctx, titleBarBox, color,
@@ -578,12 +592,15 @@ void CHyprBar::renderPass(Render::CRenderContext& ctx, PHLMONITOR pMonitor, cons
     }
 
     if (ROUNDING) {
-        // cleanup stencil
+        // cleanup stencil (also needs to be done without the scissor, otherwise
+        // the mask would be left over the window content)
+        g_pHyprOpenGL->scissor(ctx, nullptr);
         glClearStencil(0);
         glClear(GL_STENCIL_BUFFER_BIT);
         g_pHyprOpenGL->setCapStatus(GL_STENCIL_TEST, false);
         glStencilMask(-1);
         glStencilFunc(GL_ALWAYS, 1, 0xFF);
+        g_pHyprOpenGL->scissor(ctx, titleBarBox);
     }
 
     CBox textBox = {titleBarBox.x, titleBarBox.y, BARBUF.x, BARBUF.y};
